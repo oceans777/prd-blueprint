@@ -1,2 +1,7 @@
 # prd-blueprint
-PRD outline and detailed requirements skill.
+
+oceans777 first-party skill. The entry file is `SKILL.md`.
+
+Canonical repository: https://github.com/oceans777/prd-blueprint
+
+Hub: https://github.com/oceans777/skills
