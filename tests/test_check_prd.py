@@ -13,6 +13,9 @@ OUTLINE = """# 示例总纲
 ## 一句话目的
 让用户只读查看自己的材料。
 
+## 技术栈
+Python 标准库；无 UI/DB。
+
 ## 功能清单
 - 功能01：展示材料，不允许编辑。
 - 功能02：保留可追溯记录。
@@ -43,9 +46,17 @@ class StructureTests(unittest.TestCase):
     def test_valid_documents(self):
         self.assertEqual(validate_documents(OUTLINE, full(), OUTLINE), [])
 
-    def test_three_headings_only(self):
+    def test_four_headings_only(self):
         changed = OUTLINE + "\n## 额外章节\n不该存在。\n"
-        self.assertTrue(validate_documents(changed, full(changed)))
+        errors = validate_documents(changed, full(changed))
+        self.assertTrue(any("一句话目的、技术栈、功能清单、验收标准" in x for x in errors))
+
+    def test_tech_stack_empty_or_too_long(self):
+        empty = OUTLINE.replace("Python 标准库；无 UI/DB。\n", "")
+        self.assertTrue(any("技术栈不能为空" in x for x in validate_documents(empty, full(empty))))
+        long_stack = "\n".join(f"选型{i:02d}：示例。" for i in range(1, 14))
+        too_long = OUTLINE.replace("Python 标准库；无 UI/DB。", long_stack)
+        self.assertTrue(any("超过12行" in x for x in validate_documents(too_long, full(too_long))))
 
     def test_heading_order(self):
         changed = OUTLINE.replace("## 一句话目的", "## 功能清单", 1)

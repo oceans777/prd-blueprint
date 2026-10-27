@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""只读检查总纲、需求正文和待发送总纲；不作语义或用户确认判断。"""
+"""只读检查总纲、需求正文和待发送总纲；可选检查技术基线镜像。不作语义或用户确认判断。"""
 from __future__ import annotations
 
 import argparse
@@ -8,9 +8,11 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-HEADINGS = ("一句话目的", "功能清单", "验收标准")
+HEADINGS = ("一句话目的", "技术栈", "功能清单", "验收标准")
 START = "<!-- 总纲开始 -->"
 END = "<!-- 总纲结束 -->"
+TECH_START = "<!-- 技术基线开始 -->"
+TECH_END = "<!-- 技术基线结束 -->"
 FEATURE = re.compile(r"^- (功能\d{2,})[：:]\s*(.+)$", re.MULTILINE)
 ACCEPTANCE = re.compile(
     r"^- (验收\d{2,})\s*→\s*(功能\d{2,}(?:\s*[、,，]\s*功能\d{2,})*)[：:]\s*(.+)$",
@@ -36,24 +38,35 @@ def repeated(ids: list[str]) -> list[str]:
     return sorted(key for key, count in Counter(ids).items() if count > 1)
 
 
-def validate_documents(outline: str, prd: str, chat: str | None = None) -> list[str]:
+def validate_documents(
+    outline: str,
+    prd: str,
+    chat: str | None = None,
+    tech: str | None = None,
+    chat_tech: str | None = None,
+) -> list[str]:
     """返回结构错误；空列表不代表语义正确或宿主已经触发。"""
     errors: list[str] = []
     outline, prd = canonical(outline), canonical(prd)
     outline_sections = sections(outline, 2)
     if tuple(name for name, _ in outline_sections) != HEADINGS:
-        errors.append("总纲必须且只能按顺序包含：一句话目的、功能清单、验收标准。")
+        errors.append("总纲必须且只能按顺序包含：一句话目的、技术栈、功能清单、验收标准。")
         return errors
     data = dict(outline_sections)
     if not data[HEADINGS[0]]:
         errors.append("一句话目的不能为空。")
     if len(re.split(r"\n\s*\n", data[HEADINGS[0]])) > 1:
         errors.append("一句话目的须使用一个段落，不要在这里堆叠说明。")
+    if not data[HEADINGS[1]]:
+        errors.append("技术栈不能为空。")
+    tech_lines = [ln for ln in data[HEADINGS[1]].splitlines() if ln.strip()]
+    if len(tech_lines) > 12:
+        errors.append("技术栈过长（超过12行）；只写选型短句，细节放详细 PRD。")
     if re.search(r"^###\s+", outline, re.MULTILINE):
         errors.append("总纲不得增加三级细节章节；详细内容应放进需求正文。")
 
-    features = FEATURE.findall(data[HEADINGS[1]])
-    acceptances = ACCEPTANCE.findall(data[HEADINGS[2]])
+    features = FEATURE.findall(data[HEADINGS[2]])
+    acceptances = ACCEPTANCE.findall(data[HEADINGS[3]])
     feature_ids = [row[0] for row in features]
     acceptance_ids = [row[0] for row in acceptances]
     if not features:
@@ -63,7 +76,7 @@ def validate_documents(outline: str, prd: str, chat: str | None = None) -> list[
     for label, ids in (("功能", feature_ids), ("验收", acceptance_ids)):
         if dup := repeated(ids):
             errors.append(f"总纲{label}编号重复：{'、'.join(dup)}。")
-    for heading, pattern in ((HEADINGS[1], FEATURE), (HEADINGS[2], ACCEPTANCE)):
+    for heading, pattern in ((HEADINGS[2], FEATURE), (HEADINGS[3], ACCEPTANCE)):
         for line in data[heading].splitlines():
             if re.match(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", line) and not pattern.fullmatch(line):
                 errors.append(f"{heading}条目格式不正确：{line}")
@@ -84,11 +97,22 @@ def validate_documents(outline: str, prd: str, chat: str | None = None) -> list[
     else:
         left, rest = prd.split(START, 1)
         mirror, right = rest.split(END, 1)
-        # 允许标记相邻的空行；不改写任何实际总纲正文。
         mirror = mirror.strip("\n")
         if canonical(mirror) != outline:
             errors.append("需求正文中的总纲镜像与独立总纲不一致。")
         body = left + right
+
+    if tech is not None:
+        tech = canonical(tech)
+        if prd.count(TECH_START) != 1 or prd.count(TECH_END) != 1 or prd.find(TECH_START) > prd.find(TECH_END):
+            errors.append("提供技术基线时，需求正文必须包含且仅包含一对顺序正确的技术基线镜像标记。")
+        else:
+            _l, rest = prd.split(TECH_START, 1)
+            tmirror, _r = rest.split(TECH_END, 1)
+            if canonical(tmirror.strip("\n")) != tech:
+                errors.append("需求正文中的技术基线镜像与独立技术基线不一致。")
+        if chat_tech is not None and canonical(chat_tech) != tech:
+            errors.append("待发送的对话技术基线与独立技术基线不一致。")
 
     detail_sections = sections(body, 3)
     for prefix, expected in (("功能", known_features), ("验收", known_acceptances)):
@@ -121,9 +145,17 @@ def main() -> int:
     parser.add_argument("--outline", required=True, type=Path, help="独立总纲路径")
     parser.add_argument("--prd", required=True, type=Path, help="完整需求文档路径")
     parser.add_argument("--chat", type=Path, help="待发送总纲文本路径；不是整个最终回答")
+    parser.add_argument("--tech-baseline", type=Path, help="独立技术基线路径（可选）")
+    parser.add_argument("--chat-tech", type=Path, help="待发送技术基线文本路径（可选）")
     args = parser.parse_args()
     try:
-        errors = validate_documents(read_text(args.outline), read_text(args.prd), read_text(args.chat) if args.chat else None)
+        errors = validate_documents(
+            read_text(args.outline),
+            read_text(args.prd),
+            read_text(args.chat) if args.chat else None,
+            read_text(args.tech_baseline) if args.tech_baseline else None,
+            read_text(args.chat_tech) if args.chat_tech else None,
+        )
     except (OSError, UnicodeError) as exc:
         print(f"读取失败：{exc}", file=sys.stderr)
         return 2
@@ -133,6 +165,10 @@ def main() -> int:
         return 1
     print("通过：规定章节、功能与验收编号、详细章节覆盖和总纲镜像一致。")
     print("通过：待发送总纲文本与文件一致。" if args.chat else "未检查：未提供待发送总纲文本。")
+    if args.tech_baseline:
+        print("通过：技术基线镜像检查已执行。")
+    else:
+        print("未检查：未提供技术基线文件。")
     print("范围限制：只验证结构；未证明语义忠实、用户确认、宿主触发或目标产品验收通过。")
     return 0
 
